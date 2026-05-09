@@ -11,12 +11,14 @@ const TMP_DIR = path.join(os.tmpdir(), 'zalo-tg');
 export async function downloadToTemp(url: string, fileName?: string): Promise<string> {
   mkdirSync(TMP_DIR, { recursive: true });
 
-  // Sanitize filename
+  // Sanitize filename and add a unique prefix so concurrent downloads
+  // with the same logical name (e.g. multiple 'photo.jpg' in a media group)
+  // do not overwrite each other.
   const baseName = (fileName ?? `download_${Date.now()}`)
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .slice(0, 128);
 
-  const filePath = path.join(TMP_DIR, baseName);
+  const filePath = path.join(TMP_DIR, `${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${baseName}`);
 
   const resp = await axios.get<NodeJS.ReadableStream>(url, {
     responseType: 'stream',
