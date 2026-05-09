@@ -1,3 +1,6 @@
+*Vietnamese version: [README.vi.md](README.vi.md)*
+
+
 # zalo-tg
 
 A bidirectional message bridge between **Zalo** and **Telegram**, implemented in TypeScript on Node.js. Each Zalo conversation (direct message or group) is mapped to a dedicated Forum Topic inside a Telegram supergroup, providing full message synchronisation across both platforms.
@@ -238,5 +241,3 @@ src/
 MIT
 
 ---
-
-*Vietnamese version: [README.vi.md](README.vi.md)*
