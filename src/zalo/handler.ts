@@ -296,6 +296,9 @@ export function setupZaloHandler(api: ZaloAPI): void {
         }
         if (!url) { console.warn('[ZaloHandler] Photo: no URL found in content:', media); return; }
 
+        // Caption attached to the photo by the sender (Zalo stores it in description)
+        const photoCaption = media.description?.trim() || undefined;
+
         const childnumber: number = (media as { childnumber?: number }).childnumber ?? 0;
         const albumKey = `${zaloId}:${msg.data.uidFrom}`;
 
@@ -321,7 +324,12 @@ export function setupZaloHandler(api: ZaloAPI): void {
                   {
                     ...buf.tgBase,
                     parse_mode: 'HTML' as const,
-                    caption: type === ThreadType.Group ? groupCaption(buf.senderName) : undefined,
+                    caption: type === ThreadType.Group
+                      ? photoCaption
+                        ? `${groupCaption(buf.senderName)}
+${escapeHtml(photoCaption)}`
+                        : groupCaption(buf.senderName)
+                      : photoCaption ? escapeHtml(photoCaption) : undefined,
                   },
                 );
                 msgStore.save(sent.message_id, buf.zaloMsgIds, {
@@ -343,7 +351,12 @@ export function setupZaloHandler(api: ZaloAPI): void {
                 for (const u of buf.urls) {
                   localPaths.push(await downloadToTemp(u, `photo_${Date.now()}.jpg`));
                 }
-                const captionText = type === ThreadType.Group ? groupCaption(buf.senderName) : undefined;
+                const captionText = type === ThreadType.Group
+                  ? photoCaption
+                    ? `${groupCaption(buf.senderName)}
+${escapeHtml(photoCaption)}`
+                    : groupCaption(buf.senderName)
+                  : photoCaption ? escapeHtml(photoCaption) : undefined;
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const mediaItems: any[] = localPaths.map((lp, i) => ({
                   type: 'photo',
