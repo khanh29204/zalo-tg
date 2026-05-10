@@ -3,7 +3,7 @@ import path from 'path';
 import { createReadStream } from 'fs';
 
 import type { ZaloAPI } from '../zalo/types.js';
-import { store, msgStore, userCache, friendsCache, sentMsgStore, pollStore, mediaGroupStore } from '../store.js';
+import { store, msgStore, userCache, friendsCache, groupsCache, sentMsgStore, pollStore, mediaGroupStore } from '../store.js';
 import { tgBot } from './bot.js';
 import { config } from '../config.js';
 import { downloadToTemp, cleanTemp, convertToM4a } from '../utils/media.js';
@@ -281,7 +281,6 @@ export function setupTelegramHandler(
 
   tgBot.command('search', async (ctx) => {
     if (ctx.chat.id !== config.telegram.groupId) return;
-    // /search must be in General (no topicId) or any topic — reply to same thread
     const threadId = 'message_thread_id' in ctx.message
       ? (ctx.message.message_thread_id as number | undefined)
       : undefined;
@@ -291,46 +290,141 @@ export function setupTelegramHandler(
     if (!query) {
       await ctx.telegram.sendMessage(
         config.telegram.groupId,
-        '🔍 Cú pháp: <code>/search Tên</code>',
+        '🔍 Cú pháp: <code>/search Tên</code>\nTìm kiếm cả bạn bè lẫn nhóm Zalo.',
         { ...replyOpts, parse_mode: 'HTML' },
       );
       return;
     }
+
+    if (!currentApi) { await ctx.telegram.sendMessage(config.telegram.groupId, '❌ Zalo chưa kết nối', replyOpts); return; }
 
     // Refresh friends cache if stale
     if (!friendsCache.isFresh()) {
       try {
-        const raw = await currentApi?.getAllFriends() as Array<{ userId: string; displayName: string }> | undefined;
+        const raw = await currentApi.getAllFriends() as Array<{ userId: string; displayName: string }> | undefined;
         if (raw) friendsCache.set(raw.map(f => ({ userId: f.userId, displayName: f.displayName })));
-      } catch (err) {
-        console.error('[/search] getAllFriends failed:', err);
-      }
+      } catch (err) { console.error('[/search] getAllFriends failed:', err); }
     }
 
-    const results = friendsCache.search(query, 10);
-    if (results.length === 0) {
+    // Refresh groups cache if stale
+    if (!groupsCache.isFresh()) {
+      try {
+        const rawGroups = await currentApi.getAllGroups() as { gridVerMap?: Record<string, string> } | undefined;
+        const groupIds = Object.keys(rawGroups?.gridVerMap ?? {});
+        if (groupIds.length > 0) {
+          // Fetch info in batches of 50
+          const BATCH = 50;
+          const allGroupInfo: Array<{ groupId: string; name: string; totalMember: number }> = [];
+          for (let i = 0; i < groupIds.length; i += BATCH) {
+            const batch = groupIds.slice(i, i + BATCH);
+            try {
+              const info = await currentApi.getGroupInfo(batch) as {
+                gridInfoMap?: Record<string, { name: string; totalMember: number }>;
+              } | undefined;
+              for (const [gid, g] of Object.entries(info?.gridInfoMap ?? {})) {
+                allGroupInfo.push({ groupId: gid, name: g.name, totalMember: g.totalMember });
+              }
+            } catch { /* skip batch on error */ }
+          }
+          groupsCache.set(allGroupInfo);
+        }
+      } catch (err) { console.error('[/search] getAllGroups failed:', err); }
+    }
+
+    const friendResults = friendsCache.search(query, 8);
+    const groupResults  = groupsCache.search(query, 8);
+
+    if (friendResults.length === 0 && groupResults.length === 0) {
       await ctx.telegram.sendMessage(
         config.telegram.groupId,
-        `🔍 Không tìm thấy ai có tên chứa "<b>${query}</b>".`,
+        `🔍 Không tìm thấy bạn bè hay nhóm nào có tên chứa "<b>${query}</b>".`,
         { ...replyOpts, parse_mode: 'HTML' },
       );
       return;
     }
 
-    // Build inline keyboard — each button opens/creates a DM topic
-    const buttons = results.map(f => [{
-      text: f.displayName,
-      callback_data: `sc:${f.userId}`,
-    }]);
+    const buttons: Array<Array<{ text: string; callback_data: string }>> = [];
+    for (const f of friendResults) {
+      const hasMap = store.getTopicByZalo(f.userId, 0) !== undefined;
+      buttons.push([{ text: `👤 ${f.displayName}${hasMap ? ' ✅' : ''}`, callback_data: `sc:${f.userId}` }]);
+    }
+    for (const g of groupResults) {
+      const hasMap = store.getTopicByZalo(g.groupId, 1) !== undefined;
+      buttons.push([{ text: `👥 ${g.name} (${g.totalMember} TV)${hasMap ? ' ✅' : ''}`, callback_data: `sg:${g.groupId}` }]);
+    }
+
+    const parts: string[] = [`🔍 Kết quả "<b>${query}</b>":`, ''];
+    if (friendResults.length > 0) parts.push(`👤 <b>Bạn bè</b> (${friendResults.length}):`);
+    if (groupResults.length > 0)  parts.push(`👥 <b>Nhóm</b> (${groupResults.length}):`);
+    parts.push('', '✅ = đã có topic • Nhấn để tạo topic');
 
     await ctx.telegram.sendMessage(
       config.telegram.groupId,
-      `🔍 Kết quả "<b>${query}</b>" (${results.length} người):`,
-      {
-        ...replyOpts,
-        parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: buttons },
-      },
+      parts.join('\n'),
+      { ...replyOpts, parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } },
+    );
+  });
+
+  // /addgroup — list all groups without a topic and let user pick
+  tgBot.command('addgroup', async (ctx) => {
+    if (ctx.chat.id !== config.telegram.groupId) return;
+    const threadId = 'message_thread_id' in ctx.message
+      ? (ctx.message.message_thread_id as number | undefined)
+      : undefined;
+    const replyOpts = threadId ? { message_thread_id: threadId } : {};
+
+    if (!currentApi) { await ctx.telegram.sendMessage(config.telegram.groupId, '❌ Zalo chưa kết nối', replyOpts); return; }
+
+    // Refresh groups cache if stale
+    if (!groupsCache.isFresh()) {
+      await ctx.telegram.sendMessage(config.telegram.groupId, '⏳ Đang tải danh sách nhóm...', replyOpts);
+      try {
+        const rawGroups = await currentApi.getAllGroups() as { gridVerMap?: Record<string, string> } | undefined;
+        const groupIds = Object.keys(rawGroups?.gridVerMap ?? {});
+        const BATCH = 50;
+        const allGroupInfo: Array<{ groupId: string; name: string; totalMember: number }> = [];
+        for (let i = 0; i < groupIds.length; i += BATCH) {
+          const batch = groupIds.slice(i, i + BATCH);
+          try {
+            const info = await currentApi.getGroupInfo(batch) as {
+              gridInfoMap?: Record<string, { name: string; totalMember: number }>;
+            } | undefined;
+            for (const [gid, g] of Object.entries(info?.gridInfoMap ?? {})) {
+              allGroupInfo.push({ groupId: gid, name: g.name, totalMember: g.totalMember });
+            }
+          } catch { /* skip */ }
+        }
+        groupsCache.set(allGroupInfo);
+      } catch (err) {
+        console.error('[/addgroup] failed:', err);
+        await ctx.telegram.sendMessage(config.telegram.groupId, '❌ Không lấy được danh sách nhóm.', replyOpts);
+        return;
+      }
+    }
+
+    // Show unmapped groups (no topic yet), sorted by name
+    const unmapped = groupsCache.search('', 50)
+      .filter(g => store.getTopicByZalo(g.groupId, 1) === undefined)
+      .sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+
+    if (unmapped.length === 0) {
+      await ctx.telegram.sendMessage(
+        config.telegram.groupId,
+        '✅ Tất cả nhóm Zalo đã có topic rồi!',
+        replyOpts,
+      );
+      return;
+    }
+
+    const buttons = unmapped.slice(0, 30).map(g => ([{
+      text: `👥 ${g.name} (${g.totalMember} TV)`,
+      callback_data: `sg:${g.groupId}`,
+    }]));
+
+    await ctx.telegram.sendMessage(
+      config.telegram.groupId,
+      `📋 <b>Nhóm chưa có topic</b> (${unmapped.length}):\nNhấn để tạo topic:`,
+      { ...replyOpts, parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } },
     );
   });
 
@@ -354,54 +448,74 @@ export function setupTelegramHandler(
       return;
     }
 
-    if (!data?.startsWith('sc:')) return;
+    if (!data?.startsWith('sc:') && !data?.startsWith('sg:')) return;
 
-    const userId = data.slice(3);
-    if (!userId) { await ctx.answerCbQuery('❌ Dữ liệu không hợp lệ'); return; }
+    const isGroup = data.startsWith('sg:');
+    const entityId = data.slice(3);
+    if (!entityId) { await ctx.answerCbQuery('❌ Dữ liệu không hợp lệ'); return; }
+    const threadType: 0 | 1 = isGroup ? 1 : 0;
 
     // Check if topic already exists
-    const existing = store.getTopicByZalo(userId, 0 /* DM */);
+    const existing = store.getTopicByZalo(entityId, threadType);
     if (existing !== undefined) {
       await ctx.answerCbQuery('ℹ️ Topic đã tồn tại');
       await ctx.telegram.sendMessage(
         config.telegram.groupId,
-        `💬 Topic cho người này đã có sẵn (topicId=${existing}).`,
+        `💬 Topic cho ${isGroup ? 'nhóm' : 'người'} này đã có sẵn.`,
         { message_thread_id: existing },
       );
       return;
     }
 
-    // Resolve display name (from friends cache or getUserInfo)
-    let displayName = friendsCache.search('', 0).find(f => f.userId === userId)?.displayName;
-    if (!displayName) {
-      try {
-        const resp = await currentApi?.getUserInfo(userId) as {
-          changed_profiles?: Record<string, { displayName?: string }>;
-        } | undefined;
-        displayName = resp?.changed_profiles?.[userId]?.displayName;
-      } catch { /* ignore */ }
+    // Resolve display name
+    let displayName: string | undefined;
+    if (!isGroup) {
+      displayName = friendsCache.search('', 0).find(f => f.userId === entityId)?.displayName;
+      if (!displayName) {
+        try {
+          const resp = await currentApi?.getUserInfo(entityId) as {
+            changed_profiles?: Record<string, { displayName?: string }>;
+          } | undefined;
+          displayName = resp?.changed_profiles?.[entityId]?.displayName;
+        } catch { /* ignore */ }
+      }
+      if (!displayName) displayName = `Zalo ${entityId}`;
+    } else {
+      displayName = groupsCache.search('', 0).find(g => g.groupId === entityId)?.name;
+      if (!displayName) {
+        try {
+          const info = await currentApi?.getGroupInfo(entityId) as {
+            gridInfoMap?: Record<string, { name: string }>;
+          } | undefined;
+          displayName = info?.gridInfoMap?.[entityId]?.name;
+        } catch { /* ignore */ }
+      }
+      if (!displayName) displayName = `Nhóm ${entityId}`;
     }
-    if (!displayName) displayName = `Zalo ${userId}`;
 
     // Create TG forum topic
     try {
+      const icon = isGroup ? 0x6FB9F0 : 0xFF93B2;
+      const prefix = isGroup ? '👥' : '👤';
       const topic = await ctx.telegram.createForumTopic(
         config.telegram.groupId,
-        `👤 ${displayName}`.slice(0, 128),
-        { icon_color: 0x6FB9F0 },
+        `${prefix} ${displayName}`.slice(0, 128),
+        { icon_color: icon },
       );
       const topicId = topic.message_thread_id;
-      store.set({ topicId, zaloId: userId, type: 0, name: displayName });
-      console.log(`[/search] Created DM topic "${displayName}" (topicId=${topicId})`);
+      store.set({ topicId, zaloId: entityId, type: threadType, name: displayName });
+      console.log(`[search/cb] Created ${isGroup ? 'group' : 'DM'} topic "${displayName}" (topicId=${topicId})`);
 
       await ctx.answerCbQuery('✅ Đã tạo topic!');
       await ctx.telegram.sendMessage(
         config.telegram.groupId,
-        `✅ Đã tạo topic cho <b>${displayName}</b>.\nNhắn tin tại đây để chat với họ qua Zalo.`,
+        isGroup
+          ? `✅ Đã tạo topic cho nhóm <b>${displayName}</b>.\nTin nhắn từ nhóm sẽ xuất hiện tại đây.`
+          : `✅ Đã tạo topic cho <b>${displayName}</b>.\nNhắn tin tại đây để chat với họ qua Zalo.`,
         { message_thread_id: topicId, parse_mode: 'HTML' },
       );
     } catch (err) {
-      console.error('[/search] createForumTopic failed:', err);
+      console.error('[search/cb] createForumTopic failed:', err);
       await ctx.answerCbQuery('❌ Tạo topic thất bại');
     }
   });

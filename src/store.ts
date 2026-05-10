@@ -224,6 +224,39 @@ export const friendsCache = {
   },
 };
 
+// ── Groups cache (in-memory, TTL-refreshed) ───────────────────────────────────
+
+export interface ZaloGroup {
+  groupId:     string;
+  name:        string;
+  totalMember: number;
+}
+
+const GROUPS_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let _groups:   ZaloGroup[] = [];
+let _groupsTs: number      = 0;
+
+export const groupsCache = {
+  set(list: ZaloGroup[]): void {
+    _groups   = list;
+    _groupsTs = Date.now();
+  },
+
+  search(query: string, limit = 10): ZaloGroup[] {
+    const q = query.toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, '');
+    return _groups
+      .filter(g => {
+        const n = g.name.toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, '');
+        return n.includes(q);
+      })
+      .slice(0, limit);
+  },
+
+  isFresh(): boolean {
+    return _groups.length > 0 && Date.now() - _groupsTs < GROUPS_TTL_MS;
+  },
+};
+
 // ── Sent message store (TG→Zalo direction) ────────────────────────────────────
 
 export interface SentMsgInfo {
