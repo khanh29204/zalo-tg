@@ -914,6 +914,7 @@ export function setupTelegramHandler(
           threadType === ThreadType.Group,
         );
 
+        sentMsgStore.markSending(zaloId);
         try {
           let sendResult = await api.sendMessage(
             {
@@ -946,6 +947,8 @@ export function setupTelegramHandler(
           }
         } catch (err) {
           await notifyError('sendMessage', err);
+        } finally {
+          sentMsgStore.unmarkSending(zaloId);
         }
         return;
       }
@@ -986,6 +989,7 @@ export function setupTelegramHandler(
           throw err;
         }
         const localPath = await downloadToTemp(fileLink.toString(), filename);
+        sentMsgStore.markSending(zaloId);
         try {
           console.log(`[TG→Zalo] Sending ${filename} → zaloId=${zaloId} type=${threadType}`);
           const withTimeout = <T>(p: Promise<T>) => Promise.race([
@@ -1037,6 +1041,7 @@ export function setupTelegramHandler(
         } catch (err) {
           await notifyError(`sendAttachment(${filename})`, err);
         } finally {
+          sentMsgStore.unmarkSending(zaloId);
           await cleanTemp(localPath);
         }
       };
