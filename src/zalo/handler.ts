@@ -193,10 +193,20 @@ export function setupZaloHandler(api: ZaloAPI): void {
 
   api.listener.on('message', async (msg: ZaloMessage) => {
     try {
-      // Skip messages sent by ourselves (prevents echo loop when bot sends to Zalo)
+      // Skip messages sent by the bot (TG→Zalo echo) but NOT messages
+      // the user sends directly from the Zalo app.
+      // We check both sentMsgStore (post-save) and isSendingTo (race window).
       if (msg.isSelf) {
-        console.log(`[Zalo→TG] Skip self message (${msg.data.msgId})`);
-        return;
+        const selfMsgIds = [msg.data.msgId, msg.data.realMsgId]
+          .filter((id): id is string => typeof id === 'string' && id.length > 0);
+        const isEcho =
+          selfMsgIds.some(id => sentMsgStore.getByZaloMsgId(id) !== undefined)
+          || sentMsgStore.isSendingTo(msg.threadId);
+        if (isEcho) {
+          console.log(`[Zalo→TG] Skip bot echo (${selfMsgIds.join(', ')})`);
+          return;
+        }
+        // isSelf but NOT a bot echo → user sent from Zalo app, forward to TG
       }
 
       const zaloId     = msg.threadId;

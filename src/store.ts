@@ -273,6 +273,9 @@ const _sentMap      = new Map<number, SentMsgInfo>(); // tgMsgId → info
 const _sentByZaloId = new Map<string, number>();       // String(zaloMsgId) → tgMsgId
 const _sentOrder: number[] = [];
 
+/** zaloId values currently being sent by the bot (to handle echo race condition) */
+const _pendingSendConvos = new Map<string, number>(); // zaloId → timestamp
+
 export const sentMsgStore = {
   /** Record a message we sent from TG→Zalo. tgMsgId is the user's TG message. */
   save(tgMsgId: number, info: SentMsgInfo): void {
@@ -300,6 +303,29 @@ export const sentMsgStore = {
    */
   getByZaloMsgId(zaloMsgId: string): number | undefined {
     return _sentByZaloId.get(zaloMsgId);
+  },
+
+  /**
+   * Mark a conversation (zaloId) as currently being sent to by the bot.
+   * Call BEFORE api.sendMessage() to avoid race condition where Zalo echoes
+   * back the message before the HTTP response (and sentMsgStore.save) arrives.
+   */
+  markSending(zaloId: string): void {
+    _pendingSendConvos.set(zaloId, Date.now());
+  },
+
+  /** Call AFTER sentMsgStore.save() or on send error. */
+  unmarkSending(zaloId: string): void {
+    _pendingSendConvos.delete(zaloId);
+  },
+
+  /**
+   * Returns true if the bot is currently sending (or just finished sending within
+   * 3 s) to this zaloId — used to suppress isSelf echo in the Zalo listener.
+   */
+  isSendingTo(zaloId: string): boolean {
+    const ts = _pendingSendConvos.get(zaloId);
+    return ts !== undefined && Date.now() - ts < 3000;
   },
 };
 
