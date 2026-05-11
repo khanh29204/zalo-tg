@@ -367,7 +367,7 @@ const _memberCacheLoaded = new Set<string>();
  */
 const _inFlightMsgIds = new Set<string>();
 
-export function setupZaloHandler(api: ZaloAPI): void {
+export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
   // Pre-populate userCache for all existing group topics on startup
   for (const entry of store.all()) {
     if (entry.type === 1 /* Group */) {
@@ -376,18 +376,17 @@ export function setupZaloHandler(api: ZaloAPI): void {
     }
   }
 
-  // Load alias list (tên danh bạ) once on startup
-  void (async () => {
-    try {
-      const result = await api.getAliasList() as { items?: Array<{ userId: string; alias: string }> };
-      if (result?.items?.length) {
-        aliasCache.setAll(result.items);
-        console.log(`[Zalo] Loaded ${result.items.length} aliases from address book`);
-      }
-    } catch (err) {
-      console.warn('[Zalo] Failed to load alias list:', err);
+  // Load alias list (tên danh bạ) BEFORE attaching listeners so that the first
+  // message event already has aliases available for topic naming.
+  try {
+    const result = await api.getAliasList() as { items?: Array<{ userId: string; alias: string }> };
+    if (result?.items?.length) {
+      aliasCache.setAll(result.items);
+      console.log(`[Zalo] Loaded ${result.items.length} aliases from address book`);
     }
-  })();
+  } catch (err) {
+    console.warn('[Zalo] Failed to load alias list:', err);
+  }
 
   api.listener.on('message', async (msg: ZaloMessage) => {
     try {
