@@ -26,6 +26,11 @@ async function main(): Promise<void> {
   console.log('║   Zalo ↔ Telegram Bridge  v1.0.0    ║');
   console.log('╚══════════════════════════════════════╝');
 
+  // ── Auto update checker — must register BEFORE setupTelegramHandler ─────────
+  // bot.action() is middleware; the catch-all on('callback_query') in handler.ts
+  // doesn't call next(), so ua: callbacks must be registered first in the chain.
+  startUpdateChecker(tgBot);
+
   // ── Wire up Telegram handler BEFORE launching the bot ─────────────────────
   // setupTelegramHandler returns a setter to inject the Zalo API after auto-login.
   const setZaloApi = setupTelegramHandler(null, async (newApi) => {
@@ -77,9 +82,6 @@ async function main(): Promise<void> {
   });
 
   console.log('[Boot] Bridge is running 🚀  (Ctrl+C to stop)');
-
-  // ── Auto update checker ────────────────────────────────────────────────────
-  startUpdateChecker(tgBot);
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
   const shutdown = (signal: string) => {
