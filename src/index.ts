@@ -16,7 +16,7 @@ process.on('uncaughtException', (err) => {
 // ── Boot Zalo (also used when /login swaps in a fresh API) ───────────────────
 
 async function startZalo(api: Awaited<ReturnType<typeof getZaloApi>>): Promise<void> {
-  setupZaloHandler(api);
+  await setupZaloHandler(api);
   api.listener.start();
   console.log('[Boot] Zalo listener started ✓');
 }
