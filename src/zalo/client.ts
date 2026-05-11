@@ -1,12 +1,18 @@
 import { Zalo, LoginQRCallbackEventType } from 'zca-js';
 import type { LoginQRCallback } from 'zca-js';
-import { existsSync, readFileSync, writeFileSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import { imageSizeFromFile } from 'image-size/fromFile';
 import qrcode from 'qrcode-terminal';
 import { config } from '../config.js';
 import type { ZaloAPI } from './types.js';
 
-const QR_IMAGE_PATH = '/tmp/zalo-qr.png';
+// Use os.tmpdir() so it works on Windows (e.g. C:\Users\...\AppData\Local\Temp)
+// as well as macOS/Linux (/tmp or /var/folders/...).
+const QR_TMP_DIR = path.join(os.tmpdir(), 'zalo-tg');
+mkdirSync(QR_TMP_DIR, { recursive: true });
+const QR_IMAGE_PATH = path.join(QR_TMP_DIR, 'zalo-qr.png');
 
 let _api: ZaloAPI | null = null;
 
