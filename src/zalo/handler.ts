@@ -352,6 +352,15 @@ export function setupZaloHandler(api: ZaloAPI): void {
         // isSelf but NOT a bot echo → user sent from Zalo app, forward to TG
       }
 
+      // Skip duplicate deliveries — Zalo re-emits the same message event when
+      // someone reacts (❤️, 👍, etc.), causing the same content to be forwarded
+      // multiple times. If we already have a TG mapping for this msgId, skip it.
+      const _primaryMsgId = msg.data.msgId;
+      if (_primaryMsgId && msgStore.getTgMsgId(_primaryMsgId) !== undefined) {
+        console.log(`[Zalo→TG] Skip duplicate/reaction re-emit msgId=${_primaryMsgId}`);
+        return;
+      }
+
       const zaloId     = msg.threadId;
       const type       = msg.type as 0 | 1;
       const senderName = msg.data.dName ?? msg.data.uidFrom;
