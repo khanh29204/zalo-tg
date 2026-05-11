@@ -845,42 +845,40 @@ export function setupTelegramHandler(
     const existing = store.getTopicByZalo(entityId, threadType);
     if (existing !== undefined) {
       // Verify the topic still exists by sending a test (or use getForumTopicIconStickers as a proxy)
-      // Simplest: try to fetch it — if it throws "thread not found", remove and recreate
+      // Verify the topic is still alive by actually sending a message to it.
+      // sendChatAction doesn't validate thread existence — sendMessage does.
       let topicAlive = false;
+      let probeMsg: { message_id: number } | undefined;
       try {
-        // sendChatAction is lightweight and throws if thread is gone
-        await ctx.telegram.sendChatAction(config.telegram.groupId, 'typing', { message_thread_id: existing });
+        probeMsg = await ctx.telegram.sendMessage(
+          config.telegram.groupId,
+          '💬 Topic đang hoạt động. Nhấn để xem.',
+          {
+            message_thread_id: existing,
+            reply_markup: { inline_keyboard: [[{ text: 'Mở topic ↗', url: buildTopicUrl(existing) }]] },
+          },
+        );
         topicAlive = true;
       } catch (checkErr) {
         const checkMsg = checkErr instanceof Error ? checkErr.message : String(checkErr);
-        if (checkMsg.includes('thread not found') || checkMsg.includes('TOPIC_CLOSED') || checkMsg.includes('message thread not found')) {
-          console.warn(`[sc/sg] Topic ${existing} was deleted — removing stale mapping for ${entityId}`);
+        if (
+          checkMsg.includes('thread not found') ||
+          checkMsg.includes('message thread not found') ||
+          checkMsg.includes('TOPIC_CLOSED') ||
+          checkMsg.includes('the message thread is closed')
+        ) {
+          console.warn(`[sc/sg] Topic ${existing} is gone — removing stale mapping for ${entityId}`);
           store.remove(existing);
         } else {
-          // Some other error (e.g. no permission to send) — assume alive
+          // Unknown error (e.g. rate limit) — assume alive, don't recreate
           topicAlive = true;
         }
       }
       if (topicAlive) {
         await ctx.answerCbQuery('ℹ️ Topic đã tồn tại');
-        const currentThreadId = 'message' in ctx.callbackQuery && ctx.callbackQuery.message && 'message_thread_id' in ctx.callbackQuery.message
-          ? (ctx.callbackQuery.message.message_thread_id as number | undefined)
-          : undefined;
-        await ctx.telegram.sendMessage(
-          config.telegram.groupId,
-          `💬 Topic cho ${isGroup ? 'nhóm' : 'người'} này đã có sẵn. Nhấn nút bên dưới để mở.`,
-          {
-            ...(currentThreadId ? { message_thread_id: currentThreadId } : {}),
-            reply_markup: {
-              inline_keyboard: [[
-                { text: 'Mở topic', url: buildTopicUrl(existing) },
-              ]],
-            },
-          },
-        );
         return;
       }
-      // Topic was deleted — fall through to recreate
+      // Topic gone — fall through to recreate
     }
 
     // Resolve display name
