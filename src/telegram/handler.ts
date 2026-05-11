@@ -3,7 +3,7 @@ import path from 'path';
 import { createReadStream } from 'fs';
 
 import type { ZaloAPI } from '../zalo/types.js';
-import { store, msgStore, userCache, friendsCache, groupsCache, sentMsgStore, pollStore, mediaGroupStore } from '../store.js';
+import { store, msgStore, userCache, friendsCache, groupsCache, sentMsgStore, pollStore, mediaGroupStore, reactionEchoStore } from '../store.js';
 import { tgBot } from './bot.js';
 import { config } from '../config.js';
 import { downloadToTemp, cleanTemp, convertToM4a, extractVideoThumbnail } from '../utils/media.js';
@@ -995,14 +995,20 @@ export function setupTelegramHandler(
       const { ThreadType } = await import('zca-js');
       const zaloThreadType = quote.threadType === 1 ? ThreadType.Group : ThreadType.User;
 
-      await currentApi.addReaction(
-        { rType: 0, source: 0, icon: zaloIcon },
-        {
-          data: { msgId: quote.msgId, cliMsgId: quote.cliMsgId },
-          threadId: quote.zaloId,
-          type: zaloThreadType,
-        },
-      );
+      reactionEchoStore.mark(quote.zaloId, quote.msgId, zaloIcon);
+      try {
+        await currentApi.addReaction(
+          { rType: 0, source: 0, icon: zaloIcon },
+          {
+            data: { msgId: quote.msgId, cliMsgId: quote.cliMsgId },
+            threadId: quote.zaloId,
+            type: zaloThreadType,
+          },
+        );
+      } catch (err) {
+        reactionEchoStore.cancel(quote.zaloId, quote.msgId, zaloIcon);
+        throw err;
+      }
       console.log(`[TG→Zalo] Reaction "${tgEmoji}" → Zalo "${zaloIcon}" on msg ${quote.msgId}`);
     } catch (err) {
       console.error('[TG→Zalo] Reaction error:', err);
@@ -1012,6 +1018,7 @@ export function setupTelegramHandler(
   tgBot.on('message', async (ctx) => {
     try {
       const msg = ctx.message;
+      if (ctx.from?.is_bot) return;
       // Only handle messages from our bridge group
       if (ctx.chat.id !== config.telegram.groupId) return;
 
