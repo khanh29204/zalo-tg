@@ -106,13 +106,72 @@ export interface ZaloQuoteData {
   threadType: 0 | 1;
 }
 
-const MSG_CACHE_MAX = 600;
+const MSG_CACHE_MAX = 2000;
+
+// ── Persistence helpers for msgStore ─────────────────────────────────────────
+
+interface MsgMapData {
+  /** Insertion-ordered list of [zaloMsgId, tgMsgId] pairs */
+  pairs:  [string, number][];
+  /** tgMsgId → ZaloQuoteData */
+  quotes: [number, ZaloQuoteData][];
+}
+
+const _msgMapFile = path.resolve(config.dataDir, 'msg-map.json');
+
+function _loadMsgMap(): MsgMapData {
+  if (!existsSync(_msgMapFile)) return { pairs: [], quotes: [] };
+  try {
+    return JSON.parse(readFileSync(_msgMapFile, 'utf8')) as MsgMapData;
+  } catch { return { pairs: [], quotes: [] }; }
+}
+
+let _msgPersistTimer: ReturnType<typeof setTimeout> | null = null;
+function _scheduleMsgPersist(): void {
+  if (_msgPersistTimer) return;
+  _msgPersistTimer = setTimeout(() => {
+    _msgPersistTimer = null;
+    try {
+      mkdirSync(path.dirname(_msgMapFile), { recursive: true });
+      const data: MsgMapData = {
+        pairs:  _msgKeyOrder.map(k => [k, _zaloToTg.get(k)!] as [string, number]),
+        quotes: [..._tgToQuote.entries()],
+      };
+      writeFileSync(_msgMapFile, JSON.stringify(data), 'utf8');
+    } catch (e) {
+      console.warn('[msgStore] Failed to persist msg-map:', e);
+    }
+  }, 1000);
+}
+
+// ── In-memory state (pre-loaded from disk) ────────────────────────────────────
+
 /** zaloMsgId → Telegram message_id (used to find TG reply target) */
 const _zaloToTg = new Map<string, number>();
 /** Telegram message_id → Zalo quote data (used when TG user replies) */
 const _tgToQuote = new Map<number, ZaloQuoteData>();
 /** Insertion-order keys for eviction */
 const _msgKeyOrder: string[] = [];
+
+// Load persisted data immediately
+{
+  const saved = _loadMsgMap();
+  for (const [zaloId, tgId] of saved.pairs) {
+    _zaloToTg.set(zaloId, tgId);
+    _msgKeyOrder.push(zaloId);
+  }
+  for (const [tgId, quote] of saved.quotes) {
+    _tgToQuote.set(tgId, quote);
+  }
+  // Trim if over limit (file may have grown beyond MSG_CACHE_MAX)
+  while (_msgKeyOrder.length > MSG_CACHE_MAX) {
+    const old = _msgKeyOrder.shift();
+    if (!old) break;
+    const oldTg = _zaloToTg.get(old);
+    _zaloToTg.delete(old);
+    if (oldTg !== undefined) _tgToQuote.delete(oldTg);
+  }
+}
 
 export const msgStore = {
   /**
@@ -134,6 +193,7 @@ export const msgStore = {
       _msgKeyOrder.push(id);
     }
     _tgToQuote.set(tgMsgId, quote);
+    _scheduleMsgPersist();
   },
 
   /** Get the Telegram message_id for a given Zalo message ID. */
