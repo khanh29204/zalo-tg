@@ -329,6 +329,55 @@ export const sentMsgStore = {
   },
 };
 
+const REACTION_ECHO_TTL_MS = 8_000;
+const _pendingReactionEchoes = new Map<string, { count: number; ts: number }>();
+
+function reactionEchoKey(zaloId: string, targetMsgId: string, icon: string): string {
+  return `${zaloId}::${targetMsgId}::${icon}`;
+}
+
+function prunePendingReactionEchoes(now = Date.now()): void {
+  for (const [key, entry] of _pendingReactionEchoes.entries()) {
+    if (now - entry.ts > REACTION_ECHO_TTL_MS) _pendingReactionEchoes.delete(key);
+  }
+}
+
+function decrementPendingReactionEcho(key: string): void {
+  const entry = _pendingReactionEchoes.get(key);
+  if (!entry) return;
+  if (entry.count <= 1) {
+    _pendingReactionEchoes.delete(key);
+    return;
+  }
+  _pendingReactionEchoes.set(key, { ...entry, count: entry.count - 1 });
+}
+
+export const reactionEchoStore = {
+  mark(zaloId: string, targetMsgId: string, icon: string): void {
+    const now = Date.now();
+    prunePendingReactionEchoes(now);
+    const key = reactionEchoKey(zaloId, targetMsgId, icon);
+    const existing = _pendingReactionEchoes.get(key);
+    _pendingReactionEchoes.set(key, { count: (existing?.count ?? 0) + 1, ts: now });
+  },
+
+  consume(zaloId: string, targetMsgId: string, icon: string): boolean {
+    const now = Date.now();
+    prunePendingReactionEchoes(now);
+    const key = reactionEchoKey(zaloId, targetMsgId, icon);
+    const entry = _pendingReactionEchoes.get(key);
+    if (!entry) return false;
+    decrementPendingReactionEcho(key);
+    return true;
+  },
+
+  cancel(zaloId: string, targetMsgId: string, icon: string): void {
+    prunePendingReactionEchoes();
+    const key = reactionEchoKey(zaloId, targetMsgId, icon);
+    decrementPendingReactionEcho(key);
+  },
+};
+
 // ── TG media group buffer (TG→Zalo album sync) ────────────────────────────────
 
 export interface MediaGroupItem {

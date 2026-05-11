@@ -10,7 +10,7 @@ import { tgBot } from '../telegram/bot.js';
 import { config } from '../config.js';
 import { downloadToTemp, cleanTemp } from '../utils/media.js';
 import { applyMentionsHtml, formatGroupMsgHtml, formatGroupMsg, groupCaption, topicName, truncate, escapeHtml } from '../utils/format.js';
-import { msgStore, userCache, pollStore, sentMsgStore, zaloAlbumStore, type ZaloQuoteData } from '../store.js';
+import { msgStore, userCache, pollStore, sentMsgStore, zaloAlbumStore, reactionEchoStore, type ZaloQuoteData } from '../store.js';
 import { tgQueue } from '../utils/tgQueue.js';
 
 // Proxy that routes every tg.* call through the rate-limit queue
@@ -1116,36 +1116,31 @@ ${escapeHtml(photoCaption)}`
       const zaloMsgId = String(gMsgIds[0]?.gMsgID ?? '');
       if (!zaloMsgId) return;
 
+      const zaloId = String(reaction?.threadId ?? data?.idTo ?? "");
+      if (!zaloId) return;
+
+      if (reaction?.isSelf && reactionEchoStore.consume(zaloId, zaloMsgId, rIcon)) {
+        console.log("[ZaloHandler] Reaction: skip bridge echo for " + zaloId + "/" + zaloMsgId + "/" + rIcon);
+        return;
+      }
+
       const tgMsgId = msgStore.getTgMsgId(zaloMsgId) ?? sentMsgStore.getByZaloMsgId(zaloMsgId);
       if (tgMsgId === undefined) {
         console.log(`[ZaloHandler] Reaction: no TG mapping for zaloMsgId=${zaloMsgId}`);
         return;
       }
 
-      const zaloId = reaction?.threadId ?? data?.idTo;
       const type   = (reaction?.isGroup ? 1 : 0) as 0 | 1;
-      const topicId = store.getTopicByZalo(String(zaloId), type);
+      const topicId = store.getTopicByZalo(zaloId, type);
       if (topicId === undefined) return;
 
       const rawName = typeof data?.dName === 'string' ? data.dName.trim() : '';
       const actorUid = typeof data?.uidFrom === 'string' ? data.uidFrom : undefined;
       const actorName = rawName || await resolveUserDisplayName(api, actorUid, 'ai đó');
 
-      // Auto mirror reaction in DM conversations only
-      if (type === 0) {
-        try {
-          await api.addReaction(
-            rIcon as import('zca-js').Reactions,
-            {
-              data: { msgId: zaloMsgId, cliMsgId: '' },
-              threadId: String(zaloId),
-              type: 0,
-            },
-          );
-        } catch (err) {
-          console.warn('[ZaloHandler] Auto-react failed:', err);
-        }
-      }
+      // Incoming Zalo reactions are already applied on the Zalo side.
+      // Forward them to Telegram only; mirroring them back into Zalo can create
+      // self-echo loops in DM topics.
 
       // Send reaction emoji as a reply to the forwarded TG message
       await tg.sendMessage(
