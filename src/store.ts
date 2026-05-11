@@ -248,11 +248,43 @@ export const userCache = {
   },
 };
 
+// ── Alias cache (danh bạ nickname) ───────────────────────────────────────────
+
+/** userId → alias (tên danh bạ người dùng tự đặt) */
+const _aliasMap = new Map<string, string>();
+
+export const aliasCache = {
+  /** Bulk-load from getAliasList response */
+  setAll(items: Array<{ userId: string; alias: string }>): void {
+    _aliasMap.clear();
+    for (const { userId, alias } of items) {
+      if (alias?.trim()) _aliasMap.set(userId, alias.trim());
+    }
+  },
+
+  /** Get alias for a userId, or undefined if not set */
+  get(userId: string): string | undefined {
+    return _aliasMap.get(userId);
+  },
+
+  /**
+   * Build display label: "Alias (Tên thật)" if alias differs from realName,
+   * otherwise just realName.
+   */
+  label(userId: string, realName: string): string {
+    const alias = _aliasMap.get(userId);
+    if (!alias || alias === realName) return realName;
+    return `${alias} (${realName})`;
+  },
+};
+
 // ── Friends cache (in-memory, TTL-refreshed) ──────────────────────────────────
 
 export interface ZaloFriend {
   userId:      string;
   displayName: string;
+  /** tên danh bạ (alias), nếu có */
+  alias?:      string;
 }
 
 const FRIENDS_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -267,13 +299,18 @@ export const friendsCache = {
     _friendsTs = Date.now();
   },
 
-  /** Search by substring (case/diacritic-insensitive). Returns up to `limit` results. */
+  /**
+   * Search by substring (case/diacritic-insensitive).
+   * Searches alias first, falls back to displayName.
+   * Returns up to `limit` results.
+   */
   search(query: string, limit = 10): ZaloFriend[] {
     const q = query.toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, '');
     return _friends
       .filter(f => {
-        const n = f.displayName.toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, '');
-        return n.includes(q);
+        const searchName = (f.alias || f.displayName).toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, '');
+        const realName   = f.displayName.toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, '');
+        return searchName.includes(q) || realName.includes(q);
       })
       .slice(0, limit);
   },

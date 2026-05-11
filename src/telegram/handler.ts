@@ -3,7 +3,7 @@ import path from 'path';
 import { createReadStream } from 'fs';
 
 import type { ZaloAPI } from '../zalo/types.js';
-import { store, msgStore, userCache, friendsCache, groupsCache, sentMsgStore, pollStore, mediaGroupStore, reactionEchoStore } from '../store.js';
+import { store, msgStore, userCache, friendsCache, groupsCache, sentMsgStore, pollStore, mediaGroupStore, reactionEchoStore, aliasCache } from '../store.js';
 import { tgBot } from './bot.js';
 import { config } from '../config.js';
 import { downloadToTemp, cleanTemp, convertToM4a, extractVideoThumbnail } from '../utils/media.js';
@@ -368,7 +368,13 @@ export function setupTelegramHandler(
     if (!friendsCache.isFresh()) {
       try {
         const raw = await currentApi.getAllFriends() as Array<{ userId: string; displayName: string }> | undefined;
-        if (raw) friendsCache.set(raw.map(f => ({ userId: f.userId, displayName: f.displayName })));
+        if (raw) {
+          friendsCache.set(raw.map(f => ({
+            userId:      f.userId,
+            displayName: f.displayName,
+            alias:       aliasCache.get(f.userId),
+          })));
+        }
       } catch (err) { console.error('[/search] getAllFriends failed:', err); }
     }
 
@@ -412,9 +418,10 @@ export function setupTelegramHandler(
     const buttons: Array<Array<{ text: string; callback_data: string } | { text: string; url: string }>> = [];
     for (const f of friendResults) {
       const existingTopicId = store.getTopicByZalo(f.userId, 0);
+      const label = aliasCache.label(f.userId, f.displayName);
       const row: Array<{ text: string; callback_data: string } | { text: string; url: string }> = [existingTopicId !== undefined
-        ? { text: `👤 ${f.displayName} ✅`, url: buildTopicUrl(existingTopicId) }
-        : { text: `👤 ${f.displayName}`, callback_data: `sc:${f.userId}` }];
+        ? { text: `👤 ${label} ✅`, url: buildTopicUrl(existingTopicId) }
+        : { text: `👤 ${label}`, callback_data: `sc:${f.userId}` }];
       buttons.push(row);
     }
     for (const g of groupResults) {

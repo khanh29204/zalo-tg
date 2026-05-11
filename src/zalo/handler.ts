@@ -10,7 +10,7 @@ import { tgBot } from '../telegram/bot.js';
 import { config } from '../config.js';
 import { downloadToTemp, cleanTemp } from '../utils/media.js';
 import { applyMentionsHtml, formatGroupMsgHtml, formatGroupMsg, groupCaption, topicName, truncate, escapeHtml } from '../utils/format.js';
-import { msgStore, userCache, pollStore, sentMsgStore, zaloAlbumStore, reactionEchoStore, reactionSummaryStore, type ZaloQuoteData } from '../store.js';
+import { msgStore, userCache, pollStore, sentMsgStore, zaloAlbumStore, reactionEchoStore, reactionSummaryStore, aliasCache, type ZaloQuoteData } from '../store.js';
 import { tgQueue } from '../utils/tgQueue.js';
 
 // Proxy that routes every tg.* call through the rate-limit queue
@@ -376,6 +376,19 @@ export function setupZaloHandler(api: ZaloAPI): void {
     }
   }
 
+  // Load alias list (tên danh bạ) once on startup
+  void (async () => {
+    try {
+      const result = await api.getAliasList() as { items?: Array<{ userId: string; alias: string }> };
+      if (result?.items?.length) {
+        aliasCache.setAll(result.items);
+        console.log(`[Zalo] Loaded ${result.items.length} aliases from address book`);
+      }
+    } catch (err) {
+      console.warn('[Zalo] Failed to load alias list:', err);
+    }
+  })();
+
   api.listener.on('message', async (msg: ZaloMessage) => {
     try {
       // Skip messages sent by the bot (TG→Zalo echo) but NOT messages
@@ -460,9 +473,9 @@ export function setupZaloHandler(api: ZaloAPI): void {
         displayName = info.name || senderName;
         groupAvatarUrl = info.avt;
       } else {
-        // For DMs, zaloId is the peer's UID — resolve their display name
-        const peerName = await resolveUserDisplayName(api, zaloId, senderName);
-        displayName = peerName;
+        // For DMs, zaloId is the peer's UID — resolve their real name then apply alias
+        const realName = await resolveUserDisplayName(api, zaloId, senderName);
+        displayName = aliasCache.label(zaloId, realName);
       }
 
       const topicId = await getOrCreateTopic(zaloId, type, displayName, groupAvatarUrl);
