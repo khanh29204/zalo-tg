@@ -335,8 +335,8 @@ export function setupTelegramHandler(
 
         const displayName = user.display_name || user.zalo_name || `Zalo ${user.uid}`;
         const existingTopicId = store.getTopicByZalo(user.uid, 0);
-        const button: { text: string; callback_data: string } | { text: string; url: string } = existingTopicId !== undefined
-          ? { text: `👤 ${displayName} ✅`, url: buildTopicUrl(existingTopicId) }
+        const button: { text: string; callback_data: string } = existingTopicId !== undefined
+          ? { text: `👤 ${displayName} ✅`, callback_data: `sc:${user.uid}` }
           : { text: `👤 ${displayName}`, callback_data: `sc:${user.uid}` };
 
         await ctx.telegram.sendMessage(
@@ -419,17 +419,15 @@ export function setupTelegramHandler(
     for (const f of friendResults) {
       const existingTopicId = store.getTopicByZalo(f.userId, 0);
       const label = aliasCache.label(f.userId, f.displayName);
-      const row: Array<{ text: string; callback_data: string } | { text: string; url: string }> = [existingTopicId !== undefined
-        ? { text: `👤 ${label} ✅`, url: buildTopicUrl(existingTopicId) }
-        : { text: `👤 ${label}`, callback_data: `sc:${f.userId}` }];
-      buttons.push(row);
+      buttons.push([existingTopicId !== undefined
+        ? { text: `👤 ${label} ✅`, callback_data: `sc:${f.userId}` }
+        : { text: `👤 ${label}`, callback_data: `sc:${f.userId}` }]);
     }
     for (const g of groupResults) {
       const existingTopicId = store.getTopicByZalo(g.groupId, 1);
-      const row: Array<{ text: string; callback_data: string } | { text: string; url: string }> = [existingTopicId !== undefined
-        ? { text: `👥 ${g.name} (${g.totalMember} TV) ✅`, url: buildTopicUrl(existingTopicId) }
-        : { text: `👥 ${g.name} (${g.totalMember} TV)`, callback_data: `sg:${g.groupId}` }];
-      buttons.push(row);
+      buttons.push([existingTopicId !== undefined
+        ? { text: `👥 ${g.name} (${g.totalMember} TV) ✅`, callback_data: `sg:${g.groupId}` }
+        : { text: `👥 ${g.name} (${g.totalMember} TV)`, callback_data: `sg:${g.groupId}` }]);
     }
 
     const parts: string[] = [`🔍 Kết quả "<b>${query}</b>":`, ''];
@@ -843,26 +841,46 @@ export function setupTelegramHandler(
     if (!entityId) { await ctx.answerCbQuery('❌ Dữ liệu không hợp lệ'); return; }
     const threadType: 0 | 1 = isGroup ? 1 : 0;
 
-    // Check if topic already exists
+    // Check if topic already exists and is still alive on Telegram
     const existing = store.getTopicByZalo(entityId, threadType);
     if (existing !== undefined) {
-      await ctx.answerCbQuery('ℹ️ Topic đã tồn tại');
-      const currentThreadId = 'message' in ctx.callbackQuery && ctx.callbackQuery.message && 'message_thread_id' in ctx.callbackQuery.message
-        ? (ctx.callbackQuery.message.message_thread_id as number | undefined)
-        : undefined;
-      await ctx.telegram.sendMessage(
-        config.telegram.groupId,
-        `💬 Topic cho ${isGroup ? 'nhóm' : 'người'} này đã có sẵn. Nhấn nút bên dưới để mở.`,
-        {
-          ...(currentThreadId ? { message_thread_id: currentThreadId } : {}),
-          reply_markup: {
-            inline_keyboard: [[
-              { text: 'Mở topic', url: buildTopicUrl(existing) },
-            ]],
+      // Verify the topic still exists by sending a test (or use getForumTopicIconStickers as a proxy)
+      // Simplest: try to fetch it — if it throws "thread not found", remove and recreate
+      let topicAlive = false;
+      try {
+        // sendChatAction is lightweight and throws if thread is gone
+        await ctx.telegram.sendChatAction(config.telegram.groupId, 'typing', { message_thread_id: existing });
+        topicAlive = true;
+      } catch (checkErr) {
+        const checkMsg = checkErr instanceof Error ? checkErr.message : String(checkErr);
+        if (checkMsg.includes('thread not found') || checkMsg.includes('TOPIC_CLOSED') || checkMsg.includes('message thread not found')) {
+          console.warn(`[sc/sg] Topic ${existing} was deleted — removing stale mapping for ${entityId}`);
+          store.remove(existing);
+        } else {
+          // Some other error (e.g. no permission to send) — assume alive
+          topicAlive = true;
+        }
+      }
+      if (topicAlive) {
+        await ctx.answerCbQuery('ℹ️ Topic đã tồn tại');
+        const currentThreadId = 'message' in ctx.callbackQuery && ctx.callbackQuery.message && 'message_thread_id' in ctx.callbackQuery.message
+          ? (ctx.callbackQuery.message.message_thread_id as number | undefined)
+          : undefined;
+        await ctx.telegram.sendMessage(
+          config.telegram.groupId,
+          `💬 Topic cho ${isGroup ? 'nhóm' : 'người'} này đã có sẵn. Nhấn nút bên dưới để mở.`,
+          {
+            ...(currentThreadId ? { message_thread_id: currentThreadId } : {}),
+            reply_markup: {
+              inline_keyboard: [[
+                { text: 'Mở topic', url: buildTopicUrl(existing) },
+              ]],
+            },
           },
-        },
-      );
-      return;
+        );
+        return;
+      }
+      // Topic was deleted — fall through to recreate
     }
 
     // Resolve display name
