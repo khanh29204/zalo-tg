@@ -1,4 +1,5 @@
-import { ThreadType, type AttachmentSource } from 'zca-js';
+import { Reactions, ThreadType, type AttachmentSource } from 'zca-js';
+import type { Context } from 'telegraf';
 import path from 'path';
 import { createReadStream } from 'fs';
 import { readFile, stat } from 'fs/promises';
@@ -36,13 +37,13 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
 import type { ZaloAPI } from '../zalo/types.js';
-import { store, msgStore, userCache, friendsCache, groupsCache, sentMsgStore, pollStore, mediaGroupStore, reactionEchoStore, reactionSummaryStore, aliasCache, markRecalled, type ZaloQuoteData } from '../store.js';
+import { store, msgStore, userCache, friendsCache, groupsCache, sentMsgStore, pollStore, mediaGroupStore, reactionEchoStore, reactionSummaryStore, reactionEventDedupeStore, aliasCache, markRecalled, type ZaloQuoteData } from '../store.js';
 import { tgBot } from './bot.js';
 import { config } from '../config.js';
 import { downloadToTemp, cleanTemp, convertToM4a, extractVideoThumbnail, convertWebmToGif } from '../utils/media.js';
 import { triggerQRLogin } from '../zalo/client.js';
 import { triggerAppLogin } from '../zalo/loginApp.js';
-import { invalidateAppSession, appGetReceivedFriendRequests, appGetSentFriendRequests } from '../zalo/appApi.js';
+import { invalidateAppSession, appGetReceivedFriendRequests, appGetSentFriendRequests, appGetGroupInfo, appGetGroupMembersInfo } from '../zalo/appApi.js';
 import { escapeHtml } from '../utils/format.js';
 
 // Bridge start time (module load = process start)
@@ -489,6 +490,154 @@ export function setupTelegramHandler(
       { ...replyOpts, parse_mode: 'HTML' },
     );
   });
+
+  // /group_info — show Zalo group metadata and member names for the current topic.
+  // Usage inside a Zalo group topic: /group_info [all] or /group_infoall
+  const handleGroupInfoCommand = async (ctx: Context & { message: { text?: string; message_thread_id?: number } }, forceAll = false) => {
+    if (!ctx.chat || ctx.chat.id !== config.telegram.groupId) return;
+    const topicId = 'message_thread_id' in ctx.message
+      ? (ctx.message.message_thread_id as number | undefined)
+      : undefined;
+    const replyOpts = topicId ? { message_thread_id: topicId } : {};
+
+    if (!topicId) {
+      await ctx.telegram.sendMessage(
+        config.telegram.groupId,
+        '⚠️ Hãy gửi <code>/group_info</code> trong topic của nhóm Zalo cần xem.',
+        { ...replyOpts, parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    const entry = store.getEntryByTopic(topicId);
+    if (!entry || entry.type !== 1) {
+      await ctx.telegram.sendMessage(config.telegram.groupId, '❌ Topic này không phải nhóm Zalo.', replyOpts);
+      return;
+    }
+
+    if (!currentApi) {
+      await ctx.telegram.sendMessage(config.telegram.groupId, '❌ Zalo chưa kết nối', replyOpts);
+      return;
+    }
+
+    const showAll = forceAll || /\ball\b/i.test(ctx.message.text ?? '');
+    const groupId = entry.zaloId;
+
+    try {
+      let groupData = await appGetGroupInfo(groupId);
+      if (!groupData) {
+        const info = await currentApi.getGroupInfo(groupId) as {
+          gridInfoMap?: Record<string, {
+            name?: string;
+            avt?: string;
+            memVerList?: string[];
+            currentMems?: Array<{ id: string; dName?: string; zaloName?: string }>;
+            totalMember?: number;
+            hasMoreMember?: number;
+          }>;
+        } | undefined;
+        groupData = info?.gridInfoMap?.[groupId] ?? null;
+      }
+
+      if (!groupData) {
+        await ctx.telegram.sendMessage(
+          config.telegram.groupId,
+          '❌ Không lấy được thông tin nhóm từ Zalo API. Có thể session hết hạn hoặc Zalo đang giới hạn request.',
+          replyOpts,
+        );
+        return;
+      }
+
+      const knownNames = new Map<string, string>();
+      for (const m of groupData.currentMems ?? []) {
+        const name = m.dName?.trim() || m.zaloName?.trim();
+        if (m.id && name) knownNames.set(m.id, name);
+      }
+
+      const memberUids = Array.from(new Set(
+        (groupData.memVerList ?? [])
+          .map(s => String(s).split('_')[0])
+          .filter(Boolean),
+      ));
+
+      const missingUids = memberUids.filter(uid => !knownNames.has(uid));
+      if (missingUids.length > 0) {
+        const appNames = await appGetGroupMembersInfo(missingUids).catch(() => null);
+        for (const uid of missingUids) {
+          const name = appNames?.get(uid);
+          if (name) knownNames.set(uid, name);
+        }
+      }
+
+      const members = memberUids
+        .map(uid => {
+          const profileName = knownNames.get(uid);
+          return {
+            uid,
+            name: aliasCache.get(uid)?.trim() || profileName || uid,
+            profileName,
+            isAlias: Boolean(aliasCache.get(uid)?.trim()),
+          };
+        })
+        .sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+
+      const groupName = groupData.name?.trim() || entry.name;
+      const totalMember = groupData.totalMember ?? memberUids.length;
+      const resolvedCount = members.filter(m => m.name !== m.uid).length;
+      const displayLimit = showAll ? members.length : 120;
+      const visibleMembers = members.slice(0, displayLimit);
+
+      const headerLines = [
+        `👥 <b>${escapeHtml(groupName)}</b>`,
+        `Zalo ID: <code>${escapeHtml(groupId)}</code>`,
+        `Thành viên: <b>${totalMember ?? '?'}</b>`,
+        `Đọc được tên: <b>${resolvedCount}/${memberUids.length}</b>`,
+      ];
+      if (!showAll && members.length > displayLimit) {
+        headerLines.push(``, `ℹ️ Đang hiện ${displayLimit}/${members.length} người. Gõ <code>/group_info all</code> để xem hết.`);
+      }
+
+      const lines = visibleMembers.map((m, idx) => {
+        const suffix = m.name === m.uid
+          ? ` <code>${escapeHtml(m.uid)}</code>`
+          : (m.isAlias && m.profileName && m.profileName !== m.name ? ` <i>(${escapeHtml(m.profileName)})</i>` : '');
+        return `${idx + 1}. ${escapeHtml(m.name)}${suffix}`;
+      });
+
+      if (lines.length === 0) {
+        await ctx.telegram.sendMessage(
+          config.telegram.groupId,
+          `${headerLines.join('\n')}\n\n⚠️ Zalo API không trả danh sách UID thành viên cho nhóm này.`,
+          { ...replyOpts, parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      let chunk = `${headerLines.join('\n')}\n\n<b>Danh sách:</b>`;
+      for (const line of lines) {
+        const next = `${chunk}\n${line}`;
+        if (next.length > 3500) {
+          await ctx.telegram.sendMessage(config.telegram.groupId, chunk, { ...replyOpts, parse_mode: 'HTML' });
+          chunk = line;
+        } else {
+          chunk = next;
+        }
+      }
+      if (chunk) {
+        await ctx.telegram.sendMessage(config.telegram.groupId, chunk, { ...replyOpts, parse_mode: 'HTML' });
+      }
+    } catch (err) {
+      console.error('[/group_info]', err);
+      await ctx.telegram.sendMessage(
+        config.telegram.groupId,
+        `❌ Lỗi lấy thông tin nhóm: ${escapeHtml(err instanceof Error ? err.message : String(err))}`,
+        { ...replyOpts, parse_mode: 'HTML' },
+      );
+    }
+  };
+
+  tgBot.command('group_info', async (ctx) => handleGroupInfoCommand(ctx));
+  tgBot.command('group_infoall', async (ctx) => handleGroupInfoCommand(ctx, true));
 
   tgBot.command('recall', async (ctx) => {
     if (ctx.chat.id !== config.telegram.groupId) return;
@@ -1093,6 +1242,16 @@ export function setupTelegramHandler(
 
   // ── Admin panel ──────────────────────────────────────────────────────────
 
+  // ── /update — manual update check ────────────────────────────────────────
+  tgBot.command('update', async (ctx) => {
+    if (ctx.chat.id !== config.telegram.groupId) return;
+    const { triggerUpdateCheck } = await import('../updater.js');
+    const found = await triggerUpdateCheck(ctx.telegram);
+    if (!found) {
+      await ctx.reply('✅ Bridge đã ở phiên bản mới nhất.', { parse_mode: 'HTML' });
+    }
+  });
+
   /** Reusable back-to-menu markup */
   const adminBackMarkup = () => ({
     inline_keyboard: [[{ text: '◀️ Quay lại', callback_data: 'admin:menu' }]],
@@ -1577,6 +1736,25 @@ export function setupTelegramHandler(
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const tgEmoji = (added[0] as any).emoji as string;
+      const tgMsgId = update.message_id;
+      const actorId = String(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (update as any).user?.id
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ?? (update as any).actor_chat?.id
+        ?? 'unknown',
+      );
+      const chatId = Number(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (update as any).chat?.id
+        ?? ctx.chat?.id
+        ?? 0,
+      );
+
+      if (reactionEventDedupeStore.isDuplicateTgOutbound({ chatId, messageId: tgMsgId, actorId, emoji: tgEmoji })) {
+        console.log(`[TG→Zalo] Reaction: skip duplicate update chat=${chatId} msg=${tgMsgId} actor=${actorId} emoji=${tgEmoji}`);
+        return;
+      }
 
       // Map TG emoji → Zalo Reactions icon
       // Zalo Reactions enum values are the icon strings used in addReaction
@@ -1596,8 +1774,8 @@ export function setupTelegramHandler(
         '😘':  ':-*',
         '🥰':  ';xx',
         '😍':  ';xx',
-        '🤣':  ":'>",
-        '😂':  ":'>",
+        '🤣':  Reactions.TEARS_OF_JOY,
+        '😂':  Reactions.TEARS_OF_JOY,
         '💩':  '/-shit',
         '🌹':  '/-rose',
         '💔':  '/-break',
@@ -1625,7 +1803,6 @@ export function setupTelegramHandler(
       }
 
       // Look up Zalo quote data for this TG message
-      const tgMsgId = update.message_id;
       const quote   = msgStore.getQuote(tgMsgId);
       if (!quote) {
         console.log(`[TG→Zalo] Reaction: no Zalo quote for TG msg ${tgMsgId}`);
@@ -1638,7 +1815,7 @@ export function setupTelegramHandler(
       reactionEchoStore.mark(quote.zaloId, quote.msgId, zaloIcon);
       try {
         await currentApi.addReaction(
-          { rType: 0, source: 0, icon: zaloIcon },
+          zaloIcon as unknown as import('zca-js').Reactions,
           {
             data: { msgId: quote.msgId, cliMsgId: quote.cliMsgId },
             threadId: quote.zaloId,
@@ -2206,7 +2383,14 @@ sentMsgStore.save(msg.message_id, { msgIds: [zaloMsgId], zaloId, threadType });
           const voiceUrl = uploaded[0]?.fileUrl;
           if (!voiceUrl) throw new Error('No fileUrl from uploadAttachment');
           console.log(`[TG→Zalo] Sending voice → ${voiceUrl}`);
-          const voiceResult = await api.sendVoice({ voiceUrl }, zaloId, threadType) as Record<string, unknown>;
+          // Zalo mobile relies heavily on duration metadata for native voice UX.
+          // Keep the value in milliseconds to match zca-js video/voice internals.
+          const voiceDurationMs = Math.max(0, (msg.voice.duration ?? 0) * 1000);
+          const voiceResult = await api.sendVoice(
+            voiceDurationMs > 0 ? { voiceUrl, duration: voiceDurationMs } : { voiceUrl },
+            zaloId,
+            threadType,
+          ) as Record<string, unknown>;
           const voiceMsgId = voiceResult?.msgId ?? (voiceResult?.message as Record<string, unknown> | undefined)?.msgId;
           if (voiceMsgId != null && !Number.isNaN(Number(voiceMsgId))) {
             sentMsgStore.save(msg.message_id, { msgIds: [Number(voiceMsgId)], zaloId, threadType });
@@ -2598,4 +2782,3 @@ sentMsgStore.save(msg.message_id, { msgIds: [zaloMsgId], zaloId, threadType });
 }
 
 // Called by setupTelegramHandler, but defined after so we can reference tgBot directly.
-
