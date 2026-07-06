@@ -33,7 +33,7 @@ func (m model) renderStartup(width, height int) string {
 
 	totalFrames := startupFrameCount
 	elapsed := totalFrames - m.startupFrames
-	progress := clampF(float64(elapsed) / float64(totalFrames))
+	progress := clampF(float64(elapsed) / float64(totalFrames-1))
 
 	p := ui.palette
 	maxW := min(width-4, 60)
@@ -124,14 +124,14 @@ func (m model) renderFrame() string {
 	status := m.renderStatusBar(contentWidth)
 	footer := m.renderFooter(contentWidth)
 
-	mainPanel := m.panel("activity", paneActivity, m.activity.Width+4, m.activity.Height+2, m.activity.View())
+	mainPanel := m.panel("activity", paneActivity, m.activity.Width+4, m.activity.Height+3, m.activity.View())
 	panels := mainPanel
 
 	if m.showDocs && contentWidth >= 104 {
-		docsPanel := m.panel("help", paneDocs, m.docs.Width+4, m.docs.Height+2, m.docs.View())
+		docsPanel := m.panel("help", paneDocs, m.docs.Width+4, m.docs.Height+3, m.docs.View())
 		panels = lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, "  ", docsPanel)
 	} else if m.showDocs {
-		panels = m.panel("help", paneDocs, contentWidth, height-5, m.markdownContent(contentWidth-4))
+		panels = m.panel("help", paneDocs, contentWidth, height-4, m.markdownContent(contentWidth-4))
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left, top, status, panels, footer)
@@ -390,10 +390,7 @@ func (m model) buildActivityRows(width int) []activityRow {
 
 	rows := make([]activityRow, 0, len(m.state.Events)+2)
 	for i, event := range m.state.Events {
-		isNew := i >= len(m.state.Events)-1 && i == m.eventCount-1
-		if m.eventCount == 0 {
-			isNew = false
-		}
+		isNew := i == len(m.state.Events)-1
 		rows = append(rows, activityRow{
 			rendered: m.renderEventCard(event, width, isNew),
 			plain:    plainEvent(event),

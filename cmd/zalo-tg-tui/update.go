@@ -84,9 +84,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.frozenView = ""
 			m.layout()
 			if m.mouse {
-				return m, tea.Batch(emit(tea.EnableMouseCellMotion()), tick())
+				return m, tea.Batch(emit(tea.EnableMouseCellMotion()), tick(), animTick(), m.spinner.Tick)
 			}
-			return m, tick()
+			return m, tea.Batch(tick(), animTick(), m.spinner.Tick)
 		case key.Matches(msg, m.keys.Docs):
 			if m.selectMode {
 				return m, nil
@@ -178,11 +178,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		env := envelope(msg)
 		wasLive := m.activity.AtBottom() || m.activity.TotalLineCount() == 0
 
-		if env.State.Version != "" || env.State.Phase != "" || env.Event != nil {
-			m.state = env.State
-		}
-		if env.Event != nil && len(m.state.Events) == 0 {
-			m.state.Events = append(m.state.Events, *env.Event)
+		prevEvents := m.state.Events
+		m.state = env.State
+		if len(m.state.Events) == 0 {
+			m.state.Events = prevEvents
 		}
 		if m.startupFrames > 0 && m.startupFrames <= startupFrameCount-12 && env.Event != nil {
 			m.startupFrames = 0
@@ -436,7 +435,7 @@ func (m *model) layout() {
 	}
 	topHeight := 1
 	statusHeight := 1
-	panelFrameHeight := 2
+	panelFrameHeight := 3
 	paneHeight := max(3, m.height-topHeight-statusHeight-footerHeight-panelFrameHeight-1)
 
 	docsWidth := 0
