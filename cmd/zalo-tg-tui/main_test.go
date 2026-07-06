@@ -52,8 +52,8 @@ func TestCopySelectionClearsHighlightLikeOpenCode(t *testing.T) {
 	if m.clipboard == "" {
 		t.Fatal("expected OSC52 clipboard fallback to be queued in view")
 	}
-	if !strings.HasPrefix(m.flash, "copied 3 lines") {
-		t.Fatalf("unexpected flash: %q", m.flash)
+	if !strings.HasPrefix(m.toast, "copied 3 lines") {
+		t.Fatalf("unexpected toast: %q", m.toast)
 	}
 }
 

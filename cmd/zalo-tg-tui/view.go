@@ -330,6 +330,26 @@ func (m model) animatedEmptyContent(width int) string {
 	return pattern
 }
 
+func (m model) renderToast(width int) string {
+	p := ui.palette
+	remaining := m.toastTotal - m.toastFrame
+	alpha := 1.0
+	if remaining < 10 {
+		alpha = float64(remaining) / 10.0
+	}
+	msgColor := interpolateColor(string(p.green), string(p.muted), 1.0-alpha)
+	icon := lipgloss.NewStyle().Foreground(lipgloss.Color(msgColor)).Render("● ")
+	text := lipgloss.NewStyle().Foreground(lipgloss.Color(msgColor)).Bold(true).Render(m.toast)
+	content := icon + text
+
+	box := lipgloss.NewStyle().
+		Background(p.elevated).
+		Padding(0, 2).
+		Render(content)
+
+	return ui.footer.Width(width).Render(box)
+}
+
 func (m model) renderFooter(width int) string {
 	if m.quitting {
 		return ui.footer.Width(width).Render(
@@ -345,6 +365,9 @@ func (m model) renderFooter(width int) string {
 	m.help.Width = width
 	if m.help.ShowAll {
 		return ui.footer.Width(width).Render(m.help.FullHelpView(m.keys.FullHelp()))
+	}
+	if m.toast != "" {
+		return m.renderToast(width)
 	}
 	if m.flash != "" {
 		return ui.footer.Width(width).Render(

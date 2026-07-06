@@ -229,6 +229,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.layout()
 			}
 		}
+		if m.toast != "" {
+			m.toastFrame++
+			if m.toastFrame >= m.toastTotal {
+				m.toast = ""
+				m.toastFrame = 0
+			}
+			m.layout()
+		}
 		if len(m.state.Events) == 0 || m.quitting {
 			m.layout()
 		}
@@ -254,8 +262,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case clipboardWriteMsg:
-		if msg.method != "" && strings.HasPrefix(m.flash, "copied ") {
-			m.flash += " to clipboard"
+		if msg.method != "" && strings.HasPrefix(m.toast, "copied ") {
+			m.toast += " to clipboard"
 		}
 		return m, nil
 	}
@@ -383,12 +391,13 @@ func (m *model) copySelection() tea.Cmd {
 	m.selection = selectionState{}
 	m.clipboard = ansi.SetSystemClipboard(text)
 	lines := strings.Count(text, "\n") + 1
-	m.flash = fmt.Sprintf("copied %d line%s", lines, plural(lines))
+	m.toast = fmt.Sprintf("copied %d line%s", lines, plural(lines))
+	m.toastFrame = 0
+	m.toastTotal = 30
 	m.layout()
 	return tea.Batch(
 		copyToSystemClipboard(text),
 		tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg { return clearClipboardMsg{} }),
-		tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return clearFlashMsg{} }),
 	)
 }
 

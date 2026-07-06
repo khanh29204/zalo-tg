@@ -84,6 +84,10 @@ type model struct {
 	eventCount   int
 	phase        string
 	startupFrames int
+
+	toast      string
+	toastFrame int
+	toastTotal int
 }
 
 type activityRow struct {
